@@ -1,3 +1,19 @@
+/*
+
+ * Function Generator for ESP32 (Pseudo-turn-signal)
+
+ * 
+
+ * License: Custom License
+
+ * - Free to use for personal purposes only (at your own risk).
+
+ * - Commercial use is prohibited.
+
+ * - See the LICENSE file for details.
+
+ */
+
 #include <Arduino.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
