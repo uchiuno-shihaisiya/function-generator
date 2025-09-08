@@ -20,6 +20,19 @@
 #include <Adafruit_SSD1306.h>
 #include <Preferences.h>  // NVS
 
+#define def_hazard "hazard"
+#define def_ess "ess"
+#define def_position "position"
+#define def_l_turn "L_turn"
+#define def_r_tuurn "R_turn"
+
+#define def_hazard_mask 0b1111
+#define def_ess_mask 0b1111
+#define def_position_mask 0b1111
+#define def_l_turn_mask 0b1100
+#define def_r_tuurn_mask 0b0011
+
+
 portMUX_TYPE encMux = portMUX_INITIALIZER_UNLOCKED;
 
 // ====== エンコーダー関連 ======
@@ -38,6 +51,8 @@ static const uint32_t MAX_US = 3000000UL;   // us 内部値の上限（3秒）
 
 struct PatternUS { uint32_t on_us, off_us; };
 static PatternUS PRESET_POSITION_US = { ms2us(8),   ms2us(1)   };
+static PatternUS PRESET_R_TURN_US     = { ms2us(380), ms2us(190) };
+static PatternUS PRESET_L_TURN_US     = { ms2us(380), ms2us(190) };
 static PatternUS PRESET_TURN_US     = { ms2us(380), ms2us(190) };
 static PatternUS PRESET_ESS_US      = { ms2us(120), ms2us(120) };
 
@@ -232,7 +247,7 @@ void printlnChLine(int i, bool isSelected) {
 }
 
 // 表示用：現在のプリセット名
-const char* currentPreset = "turn"; // 既定は従来どおり
+const char* currentPreset = def_hazard; // 既定は従来どおり
 
 // currentPreset をユーザー名に差し替えるための作業バッファ
 static char userPresetName[32]; // 31文字+終端
@@ -261,7 +276,7 @@ void saveSettings(){
 
 void loadSettings(){
   prefs.begin("fn-gen", true);
-  String p = prefs.getString("preset", "turn");
+  String p = prefs.getString("preset", def_hazard);
   autostart = prefs.getBool("autostart", false);
   uiUnit = (TimeUnit)prefs.getUChar("unit", (uint8_t)UNIT_MS);
   enc_step_us = prefs.getUInt("stepus", 1000);
@@ -288,9 +303,11 @@ void loadSettings(){
 
   prefs.end();
 
-  if(p=="position"){ currentPreset="position"; }
-  else if(p=="ess"){ currentPreset="ess"; }
-  else if(p=="turn"){ currentPreset="turn"; }
+  if(p==def_position){ currentPreset=def_position; }
+  else if(p==def_ess){ currentPreset=def_ess; }
+  else if(p==def_hazard){ currentPreset=def_hazard; }
+  else if(p==def_l_turn){ currentPreset=def_l_turn; }
+  else if(p==def_r_tuurn){ currentPreset=def_r_tuurn; }
   else { 
     // ユーザー名などカスタム名だった場合
     snprintf(userPresetName, sizeof(userPresetName), "%s", p.c_str());
@@ -428,7 +445,8 @@ void listPresetSlots() {
 }
 
 // ====== プリセット適用 ======
-void apply_preset_us(const PatternUS& p){
+void apply_preset_us(const PatternUS& p,uint8_t mask){
+  set_running_mask(mask);
   for(int i=0;i<4;i++){ ch[i].on_us=p.on_us; ch[i].off_us=p.off_us; ch[i].phase_us=0; }
 }
 
@@ -588,7 +606,7 @@ void handle_command(String line){
       "set CH ONms OFFms\n"
       "setus CH ONus OFFus\n"
       "phase CH ms\n"
-      "preset position|turn|ess\n"
+      "preset R_turn|L_turn|hazard|ess|position\n"
       "autostart on|off\n"
       "unit ms|us\n"
       "step N   (unitに従う)\n"
@@ -739,9 +757,11 @@ void handle_command(String line){
   }
 
   if(t[0]=="preset" && n>=2){
-    if(t[1]=="position"){ apply_preset_us(PRESET_POSITION_US); currentPreset = "position"; }
-    else if(t[1]=="turn"){ apply_preset_us(PRESET_TURN_US);   currentPreset = "turn"; }
-    else if(t[1]=="ess"){  apply_preset_us(PRESET_ESS_US);    currentPreset = "ess"; }
+    if(t[1]==def_position){ apply_preset_us(PRESET_POSITION_US,def_position_mask); currentPreset = def_position; }
+    else if(t[1]==def_hazard){ apply_preset_us(PRESET_TURN_US,def_hazard_mask);   currentPreset = def_hazard; }
+    else if(t[1]==def_ess){  apply_preset_us(PRESET_ESS_US,def_ess_mask);    currentPreset = def_ess; }
+    else if(t[1]==def_l_turn){  apply_preset_us(PRESET_L_TURN_US,def_l_turn_mask);    currentPreset = def_l_turn; }
+    else if(t[1]==def_r_tuurn){  apply_preset_us(PRESET_R_TURN_US,def_r_tuurn_mask);    currentPreset = def_r_tuurn; }
     else { Serial.println("unknown preset"); return; }
     print_state(); return;
   }
@@ -1019,14 +1039,20 @@ void loop(){
   if (!preset_now && preset_down) {
     // 離したタイミングで短押し判定
     if (!preset_held) {
+      Serial.println("pushed");
       // 短押し：プリセット循環
-      if (String(currentPreset) == "turn") {
-        apply_preset_us(PRESET_ESS_US);      currentPreset = "ess";
-      } else if (String(currentPreset) == "ess") {
-        apply_preset_us(PRESET_POSITION_US); currentPreset = "position";
-      } else {
-        apply_preset_us(PRESET_TURN_US);     currentPreset = "turn";
+      if (String(currentPreset) == def_hazard) {
+        apply_preset_us(PRESET_ESS_US,def_ess_mask);      currentPreset = def_ess;
+      } else if (String(currentPreset) == def_ess) {
+        apply_preset_us(PRESET_POSITION_US,def_position_mask); currentPreset = def_position;
+      } else if(String(currentPreset) == def_position){
+        apply_preset_us(PRESET_L_TURN_US,def_l_turn_mask);     currentPreset = def_l_turn;
+      } else if(String(currentPreset) == def_l_turn){
+        apply_preset_us(PRESET_R_TURN_US,def_r_tuurn_mask);     currentPreset = def_r_tuurn;
+      } else{
+        apply_preset_us(PRESET_TURN_US,def_hazard_mask);     currentPreset = def_hazard;
       }
+      Serial.println(currentPreset);
     }
     // 状態リセット
     preset_down = false;
