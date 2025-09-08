@@ -26,13 +26,6 @@
 #define def_l_turn "L_turn"
 #define def_r_tuurn "R_turn"
 
-#define def_hazard_mask 0b1111
-#define def_ess_mask 0b1111
-#define def_position_mask 0b1111
-#define def_l_turn_mask 0b1100
-#define def_r_tuurn_mask 0b0011
-
-
 portMUX_TYPE encMux = portMUX_INITIALIZER_UNLOCKED;
 
 // ====== エンコーダー関連 ======
@@ -445,9 +438,20 @@ void listPresetSlots() {
 }
 
 // ====== プリセット適用 ======
-void apply_preset_us(const PatternUS& p,uint8_t mask){
-  set_running_mask(mask);
-  for(int i=0;i<4;i++){ ch[i].on_us=p.on_us; ch[i].off_us=p.off_us; ch[i].phase_us=0; }
+void apply_preset_us(const PatternUS& p,const char* currentPset){
+  if(String(currentPset) == def_l_turn){
+    ch[0].on_us=p.on_us;ch[0].off_us=p.off_us; ch[0].phase_us=0;
+    ch[1].on_us=p.on_us;ch[1].off_us=p.off_us; ch[1].phase_us=0;
+    ch[2].on_us=PRESET_POSITION_US.on_us;ch[2].off_us=PRESET_POSITION_US.off_us; ch[2].phase_us=0;
+    ch[3].on_us=PRESET_POSITION_US.on_us;ch[3].off_us=PRESET_POSITION_US.off_us; ch[3].phase_us=0;
+  }else if(String(currentPset) == def_r_tuurn){
+    ch[0].on_us=PRESET_POSITION_US.on_us;ch[0].off_us=PRESET_POSITION_US.off_us; ch[0].phase_us=0;
+    ch[1].on_us=PRESET_POSITION_US.on_us;ch[1].off_us=PRESET_POSITION_US.off_us; ch[1].phase_us=0;
+    ch[2].on_us=p.on_us;ch[2].off_us=p.off_us; ch[2].phase_us=0;
+    ch[3].on_us=p.on_us;ch[3].off_us=p.off_us; ch[3].phase_us=0;  
+  }else{
+    for(int i=0;i<4;i++){ ch[i].on_us=p.on_us; ch[i].off_us=p.off_us; ch[i].phase_us=0; }
+  }
 }
 
 // --- Mode 表示用 ---
@@ -757,11 +761,11 @@ void handle_command(String line){
   }
 
   if(t[0]=="preset" && n>=2){
-    if(t[1]==def_position){ apply_preset_us(PRESET_POSITION_US,def_position_mask); currentPreset = def_position; }
-    else if(t[1]==def_hazard){ apply_preset_us(PRESET_TURN_US,def_hazard_mask);   currentPreset = def_hazard; }
-    else if(t[1]==def_ess){  apply_preset_us(PRESET_ESS_US,def_ess_mask);    currentPreset = def_ess; }
-    else if(t[1]==def_l_turn){  apply_preset_us(PRESET_L_TURN_US,def_l_turn_mask);    currentPreset = def_l_turn; }
-    else if(t[1]==def_r_tuurn){  apply_preset_us(PRESET_R_TURN_US,def_r_tuurn_mask);    currentPreset = def_r_tuurn; }
+    if(t[1]==def_position){ apply_preset_us(PRESET_POSITION_US,def_position); currentPreset = def_position; }
+    else if(t[1]==def_hazard){ apply_preset_us(PRESET_TURN_US,def_hazard);   currentPreset = def_hazard; }
+    else if(t[1]==def_ess){  apply_preset_us(PRESET_ESS_US,def_ess);    currentPreset = def_ess; }
+    else if(t[1]==def_l_turn){  apply_preset_us(PRESET_L_TURN_US,def_l_turn);    currentPreset = def_l_turn; }
+    else if(t[1]==def_r_tuurn){  apply_preset_us(PRESET_R_TURN_US,def_r_tuurn);    currentPreset = def_r_tuurn; }
     else { Serial.println("unknown preset"); return; }
     print_state(); return;
   }
@@ -1042,15 +1046,15 @@ void loop(){
       Serial.println("pushed");
       // 短押し：プリセット循環
       if (String(currentPreset) == def_hazard) {
-        apply_preset_us(PRESET_ESS_US,def_ess_mask);      currentPreset = def_ess;
+        apply_preset_us(PRESET_ESS_US,def_ess);      currentPreset = def_ess;
       } else if (String(currentPreset) == def_ess) {
-        apply_preset_us(PRESET_POSITION_US,def_position_mask); currentPreset = def_position;
+        apply_preset_us(PRESET_POSITION_US,def_position); currentPreset = def_position;
       } else if(String(currentPreset) == def_position){
-        apply_preset_us(PRESET_L_TURN_US,def_l_turn_mask);     currentPreset = def_l_turn;
+        apply_preset_us(PRESET_L_TURN_US,def_l_turn);     currentPreset = def_l_turn;
       } else if(String(currentPreset) == def_l_turn){
-        apply_preset_us(PRESET_R_TURN_US,def_r_tuurn_mask);     currentPreset = def_r_tuurn;
+        apply_preset_us(PRESET_R_TURN_US,def_r_tuurn);     currentPreset = def_r_tuurn;
       } else{
-        apply_preset_us(PRESET_TURN_US,def_hazard_mask);     currentPreset = def_hazard;
+        apply_preset_us(PRESET_TURN_US,def_hazard);     currentPreset = def_hazard;
       }
       Serial.println(currentPreset);
     }
