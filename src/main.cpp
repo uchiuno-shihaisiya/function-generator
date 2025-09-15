@@ -53,6 +53,10 @@ static inline uint32_t clamp_us(uint32_t v){
   return v == 0 ? 1u : (v > MAX_US ? MAX_US : v);
 }
 
+// 先頭付近のグローバルに追加
+TaskHandle_t gPulseTask = nullptr;
+portMUX_TYPE pulseMux = portMUX_INITIALIZER_UNLOCKED;  // 出力の最小限クリティカル区間用
+
 // ==== SAVED! オーバーレイ表示 ====
 static bool     g_showSaved = false;
 static uint32_t g_savedUntil = 0;
@@ -86,11 +90,10 @@ EditTarget editTarget = EDIT_ON;
 
 void apply_level(int i, bool hi){
   ch[i].level = hi;
-  if (ch[i].muted) {
-    digitalWrite(ch[i].pin, LOW);          // ★ミュート中は常にLOW
-  } else {
-    digitalWrite(ch[i].pin, hi ? HIGH : LOW);
-  }
+  portENTER_CRITICAL(&pulseMux);      // ★ 追加
+  if (ch[i].muted) digitalWrite(ch[i].pin, LOW);
+  else              digitalWrite(ch[i].pin, hi ? HIGH : LOW);
+  portEXIT_CRITICAL(&pulseMux);       // ★ 追加
 }
 
 void start_channel(int i){
@@ -121,14 +124,30 @@ void update_channel_timers(){
   const uint32_t now = micros();
   for(int i=0;i<4;i++){
     if(!ch[i].running) continue;
-    while((int32_t)(now - ch[i].next_us) >= 0){   // ★複数周期分を追従
+
+    if((int32_t)(now - ch[i].next_us) >= 0){
       const bool nextLevel = !ch[i].level;
+
+      // ★ トグルと next_us 更新のセットを一括で短く保護
+      portENTER_CRITICAL(&pulseMux);
       apply_level(i, nextLevel);
       const uint32_t dur_us = nextLevel ? ch[i].on_us : ch[i].off_us;
       ch[i].next_us += dur_us;
+      portEXIT_CRITICAL(&pulseMux);
     }
   }
 }
+
+// 出力更新専用タスク（1ms刻みで軽く回す）
+void pulseTask(void*){
+  for(;;){
+    // 出力更新（loopのブロッキングに非依存）
+    update_channel_timers();
+    // 1msスリープ（8ms/1msの分解能には十分。さらに詰めたければ 0 でもOK）
+    vTaskDelay(1);
+  }
+}
+
 
 void set_running_mask(uint8_t mask){
   for(int i=0;i<4;i++){
@@ -979,6 +998,8 @@ void setup(){
   enc_state = readAB();  // 初期状態を保存
   attachInterrupt(digitalPinToInterrupt(PIN_ENC_A), enc_isr, CHANGE);
   attachInterrupt(digitalPinToInterrupt(PIN_ENC_B), enc_isr, CHANGE);
+
+  xTaskCreatePinnedToCore(pulseTask, "pulseTask", 2048, nullptr, 3, &gPulseTask, 0);
 
   // OLED
   oledInit();
