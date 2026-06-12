@@ -24,7 +24,7 @@
 #define def_ess "ess"
 #define def_position "position"
 #define def_l_turn "L_turn"
-#define def_r_tuurn "R_turn"
+#define def_r_turn "R_turn"
 
 portMUX_TYPE encMux = portMUX_INITIALIZER_UNLOCKED;
 
@@ -88,23 +88,31 @@ int selectedCh = 0;                  // 0..3（CH1..CH4）
 enum EditTarget { EDIT_ON, EDIT_OFF, EDIT_CH, EDIT_STEP };
 EditTarget editTarget = EDIT_ON;
 
-void apply_level(int i, bool hi){
+// ロック無し版（ピン出力だけ）
+inline void apply_level_nolock(int i, bool hi){
   ch[i].level = hi;
-  portENTER_CRITICAL(&pulseMux);      // ★ 追加
   if (ch[i].muted) digitalWrite(ch[i].pin, LOW);
-  else              digitalWrite(ch[i].pin, hi ? HIGH : LOW);
-  portEXIT_CRITICAL(&pulseMux);       // ★ 追加
+  else             digitalWrite(ch[i].pin, hi ? HIGH : LOW);
+}
+
+// 既存の apply_level は “呼び出し側で必要ならロックを取る” 方針に変更
+inline void apply_level(int i, bool hi){
+  apply_level_nolock(i, hi);
 }
 
 void start_channel(int i){
   ch[i].running = true;
-  apply_level(i, true);
+  portENTER_CRITICAL(&pulseMux);
+  apply_level_nolock(i, true);
   ch[i].next_us = micros() + (ch[i].on_us + ch[i].phase_us);
+  portEXIT_CRITICAL(&pulseMux);
 }
 
 void stop_channel(int i){
   ch[i].running = false;
-  apply_level(i, LOW);
+  portENTER_CRITICAL(&pulseMux);
+  apply_level_nolock(i, false);
+  portEXIT_CRITICAL(&pulseMux);
 }
 
 // --- ビットマスクで CH を開始／停止するヘルパー ---
@@ -125,14 +133,14 @@ void update_channel_timers(){
   for(int i=0;i<4;i++){
     if(!ch[i].running) continue;
 
-    if((int32_t)(now - ch[i].next_us) >= 0){
+    int guard = 4; // 追従は最大4回
+    while((int32_t)(now - ch[i].next_us) >= 0 && guard-- > 0){
       const bool nextLevel = !ch[i].level;
 
-      // ★ トグルと next_us 更新のセットを一括で短く保護
       portENTER_CRITICAL(&pulseMux);
-      apply_level(i, nextLevel);
+      apply_level_nolock(i, nextLevel);                     // ★ ロック内で直接
       const uint32_t dur_us = nextLevel ? ch[i].on_us : ch[i].off_us;
-      ch[i].next_us += dur_us;
+      ch[i].next_us += dur_us;                              // ★ トグルと同じロックで更新
       portEXIT_CRITICAL(&pulseMux);
     }
   }
@@ -319,7 +327,7 @@ void loadSettings(){
   else if(p==def_ess){ currentPreset=def_ess; }
   else if(p==def_hazard){ currentPreset=def_hazard; }
   else if(p==def_l_turn){ currentPreset=def_l_turn; }
-  else if(p==def_r_tuurn){ currentPreset=def_r_tuurn; }
+  else if(p==def_r_turn){ currentPreset=def_r_turn; }
   else { 
     // ユーザー名などカスタム名だった場合
     snprintf(userPresetName, sizeof(userPresetName), "%s", p.c_str());
@@ -463,13 +471,20 @@ void apply_preset_us(const PatternUS& p,const char* currentPset){
     ch[1].on_us=p.on_us;ch[1].off_us=p.off_us; ch[1].phase_us=0;
     ch[2].on_us=PRESET_POSITION_US.on_us;ch[2].off_us=PRESET_POSITION_US.off_us; ch[2].phase_us=0;
     ch[3].on_us=PRESET_POSITION_US.on_us;ch[3].off_us=PRESET_POSITION_US.off_us; ch[3].phase_us=0;
-  }else if(String(currentPset) == def_r_tuurn){
+  }else if(String(currentPset) == def_r_turn){
     ch[0].on_us=PRESET_POSITION_US.on_us;ch[0].off_us=PRESET_POSITION_US.off_us; ch[0].phase_us=0;
     ch[1].on_us=PRESET_POSITION_US.on_us;ch[1].off_us=PRESET_POSITION_US.off_us; ch[1].phase_us=0;
     ch[2].on_us=p.on_us;ch[2].off_us=p.off_us; ch[2].phase_us=0;
     ch[3].on_us=p.on_us;ch[3].off_us=p.off_us; ch[3].phase_us=0;  
   }else{
     for(int i=0;i<4;i++){ ch[i].on_us=p.on_us; ch[i].off_us=p.off_us; ch[i].phase_us=0; }
+  }
+  uint32_t base = micros();
+  for (int i=0;i<4;i++){
+    if (ch[i].running){
+      // 1ms 先で次の判定が起きるように
+      ch[i].next_us = base + 1000;
+    }
   }
 }
 
@@ -784,7 +799,7 @@ void handle_command(String line){
     else if(t[1]==def_hazard){ apply_preset_us(PRESET_TURN_US,def_hazard);   currentPreset = def_hazard; }
     else if(t[1]==def_ess){  apply_preset_us(PRESET_ESS_US,def_ess);    currentPreset = def_ess; }
     else if(t[1]==def_l_turn){  apply_preset_us(PRESET_L_TURN_US,def_l_turn);    currentPreset = def_l_turn; }
-    else if(t[1]==def_r_tuurn){  apply_preset_us(PRESET_R_TURN_US,def_r_tuurn);    currentPreset = def_r_tuurn; }
+    else if(t[1]==def_r_turn){  apply_preset_us(PRESET_R_TURN_US,def_r_turn);    currentPreset = def_r_turn; }
     else { Serial.println("unknown preset"); return; }
     print_state(); return;
   }
@@ -883,28 +898,42 @@ void handle_command(String line){
 
   if (t[0]=="mute" && n>=2) {
     if (t[1]=="all") {
-      for (int i=0;i<4;i++){ ch[i].muted = true;  apply_level(i, ch[i].level); }
+      for (int i=0;i<4;i++){
+        ch[i].muted = true;
+        portENTER_CRITICAL(&pulseMux);
+        apply_level_nolock(i, ch[i].level);
+        portEXIT_CRITICAL(&pulseMux);
+      }
       Serial.println("muted all");
     } else {
       int chn = t[1].toInt();
       if (chn<1 || chn>4){ Serial.println("bad ch"); return; }
       ch[chn-1].muted = true;
-      apply_level(chn-1, ch[chn-1].level);   // 即LOWに反映
+      portENTER_CRITICAL(&pulseMux);
+      apply_level_nolock(chn-1, ch[chn-1].level);
+      portEXIT_CRITICAL(&pulseMux);
       Serial.printf("CH%d muted\n", chn);
     }
-    print_state(); 
+    print_state();
     return;
   }
 
   if (t[0]=="unmute" && n>=2) {
     if (t[1]=="all") {
-      for (int i=0;i<4;i++){ ch[i].muted = false; apply_level(i, ch[i].level); }
+      for (int i=0;i<4;i++){
+        ch[i].muted = false;
+        portENTER_CRITICAL(&pulseMux);
+        apply_level_nolock(i, ch[i].level);
+        portEXIT_CRITICAL(&pulseMux);
+      }
       Serial.println("unmuted all");
     } else {
       int chn = t[1].toInt();
       if (chn<1 || chn>4){ Serial.println("bad ch"); return; }
       ch[chn-1].muted = false;
-      apply_level(chn-1, ch[chn-1].level);   // 直ちに状態に復帰
+      portENTER_CRITICAL(&pulseMux);
+      apply_level_nolock(chn-1, ch[chn-1].level);
+      portEXIT_CRITICAL(&pulseMux);
       Serial.printf("CH%d unmuted\n", chn);
     }
     print_state();
@@ -1015,7 +1044,7 @@ void setup(){
 }
 
 void loop(){
-  update_channel_timers();
+  //update_channel_timers();
   oledDraw();
 
   // シリアル入力
@@ -1073,7 +1102,7 @@ void loop(){
       } else if(String(currentPreset) == def_position){
         apply_preset_us(PRESET_L_TURN_US,def_l_turn);     currentPreset = def_l_turn;
       } else if(String(currentPreset) == def_l_turn){
-        apply_preset_us(PRESET_R_TURN_US,def_r_tuurn);     currentPreset = def_r_tuurn;
+        apply_preset_us(PRESET_R_TURN_US,def_r_turn);     currentPreset = def_r_turn;
       } else{
         apply_preset_us(PRESET_TURN_US,def_hazard);     currentPreset = def_hazard;
       }
