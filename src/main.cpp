@@ -26,10 +26,6 @@
 #define def_l_turn "L_turn"
 #define def_r_turn "R_turn"
 
-portMUX_TYPE encMux = portMUX_INITIALIZER_UNLOCKED;
-
-// ====== エンコーダー関連 ======
-static uint32_t lastEncMove = 0; // 前回の回転時刻
 
 // ====== 出力ピン割り当て（4ch）======
 static const int PINS[4] = {18, 19, 23, 5}; // CH1..CH4
@@ -81,7 +77,7 @@ struct Channel {
 // 単位表示/編集用
 enum TimeUnit { UNIT_MS, UNIT_US };
 TimeUnit uiUnit = UNIT_MS;           // 表示単位（ms/usを選べる）
-uint32_t enc_step_us = 1000;         // エンコーダの1クリック増分（既定=1ms=1000us）
+uint32_t enc_step_us = 1000;         // 1クリック相当の増分（既定=1ms=1000us）
 
 // 編集対象：CHとON/OFF
 int selectedCh = 0;                  // 0..3（CH1..CH4）
@@ -942,53 +938,19 @@ void handle_command(String line){
 
 }
 
-// ====== ボタン&エンコーダ ======
+// ====== ボタン ======
 #define PIN_BTN_START   26
 #define PIN_BTN_PRESET  27
-// ---- エンコーダ安定版 ----
-#define PIN_ENC_A 32
-#define PIN_ENC_B 33
-#define PIN_ENC_SW 25
-
-volatile int32_t enc_ticks = 0;
-volatile uint8_t enc_state = 0;      // 現在のAB 2bit
-volatile uint32_t enc_last_us = 0;
-
-// 2bit遷移テーブル（00,01,11,10）間の合法移動のみカウント
-const int8_t ENC_LUT[16] = {
-/* 00->00 01 11 10 */   0,  +1,   0,  -1,
-/* 01->00 01 11 10 */  -1,   0,  +1,   0,
-/* 11->00 01 11 10 */   0,  -1,   0,  +1,
-/* 10->00 01 11 10 */  +1,   0,  -1,   0
-};
-
-inline uint8_t readAB() {
-  uint8_t a = (uint8_t)digitalRead(PIN_ENC_A);
-  uint8_t b = (uint8_t)digitalRead(PIN_ENC_B);
-  return (a << 1) | b;
-}
-
-void IRAM_ATTR enc_isr() {
-  uint32_t now = micros();
-  if (now - enc_last_us < 2000) return; // ≈2msデバウンス（1〜3msで調整可）
-  enc_last_us = now;
-
-  uint8_t prev = enc_state;
-  uint8_t curr = readAB();
-  enc_state = curr;
-
-  int8_t step = ENC_LUT[(prev << 2) | curr];
-  portENTER_CRITICAL_ISR(&encMux);
-  enc_ticks += step;
-  portEXIT_CRITICAL_ISR(&encMux);
-}
+#define PIN_BTN_UP      32   // 旧ENC_A：値を増やす / 項目を次へ
+#define PIN_BTN_DOWN    33   // 旧ENC_B：値を減らす / 項目を前へ
+#define PIN_BTN_SW      25   // 旧ENC_SW：モード切替 / 保存
 
 // デバウンス用
 struct Btn {
   int pin;
   bool last;
   uint32_t t_last;
-} btnStart{PIN_BTN_START, true, 0}, btnPreset{PIN_BTN_PRESET, true, 0}, btnEnc{PIN_ENC_SW, true, 0};
+} btnStart{PIN_BTN_START, true, 0}, btnPreset{PIN_BTN_PRESET, true, 0};
 
 bool readBtn(Btn& b, bool& fell, bool& rose){
   // プルアップ前提：押下でLOW
@@ -1021,12 +983,9 @@ void setup(){
   // UIピン
   pinMode(PIN_BTN_START,  INPUT_PULLUP);
   pinMode(PIN_BTN_PRESET, INPUT_PULLUP);
-  pinMode(PIN_ENC_A, INPUT_PULLUP);
-  pinMode(PIN_ENC_B, INPUT_PULLUP);
-  pinMode(PIN_ENC_SW, INPUT_PULLUP);
-  enc_state = readAB();  // 初期状態を保存
-  attachInterrupt(digitalPinToInterrupt(PIN_ENC_A), enc_isr, CHANGE);
-  attachInterrupt(digitalPinToInterrupt(PIN_ENC_B), enc_isr, CHANGE);
+  pinMode(PIN_BTN_UP,   INPUT_PULLUP);
+  pinMode(PIN_BTN_DOWN, INPUT_PULLUP);
+  pinMode(PIN_BTN_SW,   INPUT_PULLUP);
 
   xTaskCreatePinnedToCore(pulseTask, "pulseTask", 2048, nullptr, 3, &gPulseTask, 0);
 
@@ -1113,138 +1072,167 @@ void loop(){
     preset_held = false;
   }
 
-  // --- エンコーダ回転の取り出し＆反映（1tick=1ms） ---
-  int32_t ticks;
-  portENTER_CRITICAL(&encMux);
-  ticks = enc_ticks;
-  enc_ticks = 0;
-  portEXIT_CRITICAL(&encMux);
-  if (ticks != 0) {
-    uint32_t now = millis();
-    uint32_t dt = now - lastEncMove;
-    lastEncMove = now;
+  // --- UP/DOWNボタン：長押し加速オートリピート ---
+  // 押した瞬間に1回入力。500ms後にオートリピート開始（150ms間隔）
+  // 1500ms経過で75ms間隔、2500ms経過で40ms間隔に加速。
+  // EDIT_CH / EDIT_STEP では加速なし（リピートのみ）。
+  static bool     up_down_held   = false;
+  static bool     up_last        = HIGH;
+  static bool     down_last      = HIGH;
+  static uint32_t ud_press_at    = 0;   // 最初に押した時刻
+  static uint32_t ud_next_repeat = 0;   // 次のオートリピート時刻
+  static int8_t   ud_dir         = 0;   // +1=UP, -1=DOWN, 0=none
 
-    // 加速倍率（Step編集には使わない）
-    uint8_t accel = 1;
-    if (dt < 50) accel = 4;
-    else if (dt < 120) accel = 2;
+  {
+    bool up_now   = (digitalRead(PIN_BTN_UP)   == LOW);
+    bool down_now = (digitalRead(PIN_BTN_DOWN) == LOW);
+    uint32_t nowms = millis();
 
-    if (editTarget == EDIT_CH) {
-      // CH選択を回転で 1..4 を循環
-      int v = selectedCh + (ticks > 0 ? 1 : -1);
-      if (v < 0) v = 3; if (v > 3) v = 0;
-      selectedCh = v;
-
-    } else if (editTarget == EDIT_STEP) {
-      // ★STEP 候補を左右に回す（加速なし / 1tick=1候補）
-      if (uiUnit == UNIT_MS) {
-        int i = nearest_ms_index(enc_step_us);
-        int n = (int)(sizeof(STEP_MS_LIST)/sizeof(STEP_MS_LIST[0]));
-        int dir = (ticks > 0) ? 1 : -1;
-        i = (i + dir + n) % n;
-        enc_step_us = (uint32_t)STEP_MS_LIST[i] * 1000UL;
-      } else {
-        int i = nearest_us_index(enc_step_us);
-        int n = (int)(sizeof(STEP_US_LIST)/sizeof(STEP_US_LIST[0]));
-        int dir = (ticks > 0) ? 1 : -1;
-        i = (i + dir + n) % n;
-        enc_step_us = STEP_US_LIST[i];
-      }
-
-    } else {
-      // ON / OFF を選択CHだけ編集（加速あり）
-      int i = selectedCh;
-      int32_t val = (editTarget==EDIT_ON) ? (int32_t)ch[i].on_us : (int32_t)ch[i].off_us;
-      int32_t delta = ticks * (int32_t)enc_step_us * accel;
-      val += delta;
-      if (val < 1) val = 1;
-      if (val > (int32_t)MAX_US) val = (int32_t)MAX_US;
-      if (editTarget==EDIT_ON) ch[i].on_us = (uint32_t)val;
-      else                     ch[i].off_us= (uint32_t)val;
-      if (ch[i].running) ch[i].next_us = micros() + 1000;
-    }
-  }
-
-  // --- エンコーダSW（GPIO25）：単/複/三クリック & 長押し ---
-  static bool     enc_down    = false;
-  static bool     enc_held    = false;
-  static uint32_t enc_down_at = 0;
-
-  // クリック数カウント方式に変更
-  static uint32_t click_window_start = 0;
-  static uint8_t  click_count        = 0;
-
-  static uint32_t enc_last_edge_ms = 0; // 30ms デバウンス
-
-  bool enc_now = (digitalRead(PIN_ENC_SW) == LOW);  // 押すとLOW
-
-  uint32_t nowms = millis();
-  if (nowms - enc_last_edge_ms < 30) {
-    // 物理バウンス無視
-  } else {
-    enc_last_edge_ms = nowms;
-
-    if (enc_now && !enc_down) {
-      // 押し始め
-      enc_down    = true;
-      enc_held    = false;
-      enc_down_at = nowms;
-    }
-
-    // 長押し：0.8s
-    if (enc_now && enc_down && !enc_held) {
-      if (nowms - enc_down_at >= 800) {
-        // 長押し成立 → 保存＆SAVED!
-        saveSettings();
-        showSavedBanner(1200);
-        enc_held = true;
-
-        // 長押し成立時はクリック系列をリセット
-        click_count = 0;
-        click_window_start = 0;
+    // 押し始め検出（どちらか一方のみ有効）
+    if (!up_down_held) {
+      if (up_now && up_last == HIGH) {
+        ud_dir         = +1;
+        up_down_held   = true;
+        ud_press_at    = nowms;
+        ud_next_repeat = nowms + 500;
+        // 押した瞬間に1回入力
+        goto do_ud_input;
+      } else if (down_now && down_last == HIGH) {
+        ud_dir         = -1;
+        up_down_held   = true;
+        ud_press_at    = nowms;
+        ud_next_repeat = nowms + 500;
+        goto do_ud_input;
       }
     }
 
-    // 離した
-    if (!enc_now && enc_down) {
-      if (!enc_held) {
-        // クリックカウント
-        if (click_count == 0) {
-          click_window_start = nowms;
+    // 離した検出
+    if (up_down_held) {
+      bool still_held = (ud_dir == +1) ? up_now : down_now;
+      if (!still_held) {
+        up_down_held = false;
+        ud_dir = 0;
+      }
+    }
+
+    // オートリピート
+    if (up_down_held && (int32_t)(nowms - ud_next_repeat) >= 0) {
+      uint32_t held = nowms - ud_press_at;
+      uint32_t interval = (held >= 2500) ? 40 :
+                          (held >= 1500) ? 75 : 150;
+      ud_next_repeat = nowms + interval;
+      goto do_ud_input;
+    }
+
+    goto skip_ud_input;
+
+    do_ud_input: {
+      // EDIT_CH / EDIT_STEP は加速なし（accel=1固定）
+      uint8_t accel = 1;
+      if (editTarget != EDIT_CH && editTarget != EDIT_STEP) {
+        uint32_t held = millis() - ud_press_at;
+        accel = (held >= 2500) ? 4 :
+                (held >= 1500) ? 2 : 1;
+      }
+
+      if (editTarget == EDIT_CH) {
+        int v = selectedCh + ud_dir;
+        if (v < 0) v = 3; if (v > 3) v = 0;
+        selectedCh = v;
+      } else if (editTarget == EDIT_STEP) {
+        if (uiUnit == UNIT_MS) {
+          int i = nearest_ms_index(enc_step_us);
+          int n = (int)(sizeof(STEP_MS_LIST)/sizeof(STEP_MS_LIST[0]));
+          i = (i + ud_dir + n) % n;
+          enc_step_us = (uint32_t)STEP_MS_LIST[i] * 1000UL;
+        } else {
+          int i = nearest_us_index(enc_step_us);
+          int n = (int)(sizeof(STEP_US_LIST)/sizeof(STEP_US_LIST[0]));
+          i = (i + ud_dir + n) % n;
+          enc_step_us = STEP_US_LIST[i];
         }
-        click_count++;
+      } else {
+        int i = selectedCh;
+        int32_t val = (editTarget==EDIT_ON) ? (int32_t)ch[i].on_us : (int32_t)ch[i].off_us;
+        val += ud_dir * (int32_t)enc_step_us * accel;
+        if (val < 1) val = 1;
+        if (val > (int32_t)MAX_US) val = (int32_t)MAX_US;
+        if (editTarget==EDIT_ON) ch[i].on_us = (uint32_t)val;
+        else                     ch[i].off_us= (uint32_t)val;
+        if (ch[i].running) ch[i].next_us = micros() + 1000;
       }
-      enc_down = false;
-      enc_held = false;
     }
+    skip_ud_input:;
+
+    up_last   = up_now   ? LOW : HIGH;
+    down_last = down_now ? LOW : HIGH;
   }
 
-  // クリック確定（350ms内に連続でカウント）
-  if (click_count > 0 && (millis() - click_window_start > 350)) {
-    uint8_t n = click_count;
-    click_count = 0;
+  // --- SWボタン（GPIO25）：シングル / ダブルクリック & 長押し ---
+  static bool     sw_down    = false;
+  static bool     sw_held    = false;
+  static uint32_t sw_down_at = 0;
+  static uint32_t sw_click_window_start = 0;
+  static uint8_t  sw_click_count        = 0;
+  static uint32_t sw_last_edge_ms = 0;
 
-    if (n >= 3) {
-      // ★（不要になったが、万が一残っても無視してOK）
-      // 以前はトリプルクリックで stepcycle_next() していた
-      // ここは何もしない or 好きなら stepcycle_next();
-    } else if (n == 2) {
-      // ダブルクリック：Unit 切替（スナップ付き）
-      uiUnit = (uiUnit == UNIT_MS) ? UNIT_US : UNIT_MS;
-      Serial.printf("unit=%s\n", uiUnit==UNIT_MS?"ms":"us");
-      if (uiUnit == UNIT_MS) {
-        int i = nearest_ms_index(enc_step_us);
-        enc_step_us = (uint32_t)STEP_MS_LIST[i] * 1000UL;
-      } else {
-        int i = nearest_us_index(enc_step_us);
-        enc_step_us = STEP_US_LIST[i];
+  {
+    bool sw_now = (digitalRead(PIN_BTN_SW) == LOW);
+    uint32_t nowms = millis();
+
+    if (nowms - sw_last_edge_ms >= 30) {
+      sw_last_edge_ms = nowms;
+
+      if (sw_now && !sw_down) {
+        sw_down    = true;
+        sw_held    = false;
+        sw_down_at = nowms;
       }
-    } else {
-      // ★シングルクリック：ON→OFF→CH→STEP→ON...
-      if      (editTarget == EDIT_ON)   editTarget = EDIT_OFF;
-      else if (editTarget == EDIT_OFF)  editTarget = EDIT_CH;
-      else if (editTarget == EDIT_CH)   editTarget = EDIT_STEP;
-      else                              editTarget = EDIT_ON;
+
+      // 長押し（0.8秒）→ 保存
+      if (sw_now && sw_down && !sw_held) {
+        if (nowms - sw_down_at >= 800) {
+          saveSettings();
+          showSavedBanner(1200);
+          sw_held = true;
+          sw_click_count = 0;
+          sw_click_window_start = 0;
+        }
+      }
+
+      if (!sw_now && sw_down) {
+        if (!sw_held) {
+          if (sw_click_count == 0) sw_click_window_start = nowms;
+          sw_click_count++;
+        }
+        sw_down = false;
+        sw_held = false;
+      }
+    }
+
+    // クリック確定（350ms経過）
+    if (sw_click_count > 0 && (nowms - sw_click_window_start > 350)) {
+      uint8_t n = sw_click_count;
+      sw_click_count = 0;
+
+      if (n >= 2) {
+        // ダブルクリック：単位切替（ms ↔ us）
+        uiUnit = (uiUnit == UNIT_MS) ? UNIT_US : UNIT_MS;
+        Serial.printf("unit=%s\n", uiUnit==UNIT_MS?"ms":"us");
+        if (uiUnit == UNIT_MS) {
+          int i = nearest_ms_index(enc_step_us);
+          enc_step_us = (uint32_t)STEP_MS_LIST[i] * 1000UL;
+        } else {
+          int i = nearest_us_index(enc_step_us);
+          enc_step_us = STEP_US_LIST[i];
+        }
+      } else {
+        // シングルクリック：editTarget 循環
+        if      (editTarget == EDIT_ON)   editTarget = EDIT_OFF;
+        else if (editTarget == EDIT_OFF)  editTarget = EDIT_CH;
+        else if (editTarget == EDIT_CH)   editTarget = EDIT_STEP;
+        else                              editTarget = EDIT_ON;
+      }
     }
   }
 }
