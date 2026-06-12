@@ -20,18 +20,18 @@ static void test_ms2us() {
 }
 
 static void test_us2ms() {
-    CHECK(us2ms(0)    == 0UL);
-    CHECK(us2ms(1000) == 1UL);
-    CHECK(us2ms(1500) == 1UL);  // truncates toward zero
+    CHECK(us2ms(0)       == 0UL);
+    CHECK(us2ms(1000)    == 1UL);
+    CHECK(us2ms(1500)    == 1UL);   // truncates toward zero
     CHECK(us2ms(3000000) == 3000UL);
 }
 
 static void test_clamp_us() {
-    CHECK(clamp_us(0)          == 1UL);      // 0 → 1 (minimum)
+    CHECK(clamp_us(0)          == 1UL);     // 0 → 1 (minimum)
     CHECK(clamp_us(1)          == 1UL);
     CHECK(clamp_us(1000)       == 1000UL);
     CHECK(clamp_us(MAX_US)     == MAX_US);
-    CHECK(clamp_us(MAX_US + 1) == MAX_US);   // clamped at ceiling
+    CHECK(clamp_us(MAX_US + 1) == MAX_US);  // clamped at ceiling
 }
 
 static void test_nearest_ms_index() {
@@ -40,8 +40,8 @@ static void test_nearest_ms_index() {
     CHECK(nearest_ms_index(ms2us(5))    == 1);   // exact: 5ms
     CHECK(nearest_ms_index(ms2us(10))   == 2);   // exact: 10ms
     CHECK(nearest_ms_index(ms2us(3000)) == 9);   // exact: 3000ms (last)
-    CHECK(nearest_ms_index(ms2us(4))    == 1);   // 4ms closer to 5ms than 1ms
-    CHECK(nearest_ms_index(ms2us(200))  == 5);   // 200ms closer to 250ms (dist=50000us) than 100ms (dist=100000us)
+    CHECK(nearest_ms_index(ms2us(4))    == 1);   // 4ms closer to 5ms (dist=1) than 1ms (dist=3)
+    CHECK(nearest_ms_index(ms2us(200))  == 5);   // 200ms closer to 250ms (dist=50) than 100ms (dist=100)
     CHECK(nearest_ms_index(ms2us(250))  == 5);   // exact: 250ms
 }
 
@@ -55,13 +55,18 @@ static void test_nearest_us_index() {
 }
 
 static void test_presets() {
-    CHECK(PRESET_POSITION_US.on_us  == 8000UL);
-    CHECK(PRESET_POSITION_US.off_us == 1000UL);
-    CHECK(PRESET_TURN_US.on_us      == 380000UL);
-    CHECK(PRESET_TURN_US.off_us     == 190000UL);
-    CHECK(PRESET_ESS_US.on_us       == 120000UL);
-    CHECK(PRESET_ESS_US.off_us      == 120000UL);
-    CHECK(PRESET_L_TURN_US.on_us    == PRESET_R_TURN_US.on_us);
+    // Verify values via ms2us() so the test is independent of the raw literal in fn_logic.h
+    CHECK(PRESET_POSITION_US.on_us  == ms2us(8));
+    CHECK(PRESET_POSITION_US.off_us == ms2us(1));
+    CHECK(PRESET_TURN_US.on_us      == ms2us(380));
+    CHECK(PRESET_TURN_US.off_us     == ms2us(190));
+    CHECK(PRESET_ESS_US.on_us       == ms2us(120));
+    CHECK(PRESET_ESS_US.off_us      == ms2us(120));
+    // L/R turn currently share TURN timing; both on_us and off_us must match
+    CHECK(PRESET_L_TURN_US.on_us    == PRESET_TURN_US.on_us);
+    CHECK(PRESET_L_TURN_US.off_us   == PRESET_TURN_US.off_us);
+    CHECK(PRESET_R_TURN_US.on_us    == PRESET_TURN_US.on_us);
+    CHECK(PRESET_R_TURN_US.off_us   == PRESET_TURN_US.off_us);
 }
 
 int main() {

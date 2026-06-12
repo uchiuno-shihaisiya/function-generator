@@ -1,6 +1,8 @@
 name: Build
 
 on:
+  push:
+    branches: [main]
   pull_request:
     branches: [main]
 
@@ -15,10 +17,10 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: Cache PlatformIO
+      - name: Cache PlatformIO toolchain
         uses: actions/cache@v4
         with:
-          path: ~/.platformio
+          path: ~/.platformio/packages
           key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
           restore-keys: |
             pio-${{ runner.os }}-
