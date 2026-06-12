@@ -1,0 +1,7 @@
+interface:
+  display_name: "Pre-Implementation Investigation"
+  short_description: "Investigate impact scope before implementing an AuroraBlink change"
+  default_prompt: "Perform pre-implementation investigation for an AuroraBlink change: fetch the issue or read the task description, map affected firmware layers, run cross-project keyword searches, produce a layer-by-layer change file list, and wait for user approval before writing any code."
+
+policy:
+  allow_implicit_invocation: false

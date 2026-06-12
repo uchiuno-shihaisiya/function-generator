@@ -1,0 +1,7 @@
+interface:
+  display_name: "Create PR"
+  short_description: "Create AuroraBlink pull requests safely"
+  default_prompt: "Create a standardized AuroraBlink pull request from the current branch, following all repository safety rules and the English/Japanese body format."
+
+policy:
+  allow_implicit_invocation: false

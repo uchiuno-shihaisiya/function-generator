@@ -1,0 +1,7 @@
+interface:
+  display_name: "Review PR"
+  short_description: "Review AuroraBlink pull requests"
+  default_prompt: "Review an AuroraBlink GitHub pull request by gathering PR context, running typo, style, design/logic, and performance review passes, and producing an English review report."
+
+policy:
+  allow_implicit_invocation: false
