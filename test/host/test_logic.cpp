@@ -54,6 +54,16 @@ static void test_nearest_us_index() {
     CHECK(nearest_us_index(74)     == 1);    // 74us closer to 50us (dist=24) than 100us (dist=26)
 }
 
+static void test_step_lists_sync() {
+    // STEP_MS_LIST_US must equal STEP_MS_LIST[i] * 1000 for every entry
+    size_t n_ms = sizeof(STEP_MS_LIST)    / sizeof(STEP_MS_LIST[0]);
+    size_t n_us = sizeof(STEP_MS_LIST_US) / sizeof(STEP_MS_LIST_US[0]);
+    CHECK(n_ms == n_us);
+    for (size_t i = 0; i < n_ms && i < n_us; ++i) {
+        CHECK(STEP_MS_LIST_US[i] == (uint32_t)STEP_MS_LIST[i] * 1000UL);
+    }
+}
+
 static void test_presets() {
     // Verify values via ms2us() so the test is independent of the raw literal in fn_logic.h
     CHECK(PRESET_POSITION_US.on_us  == ms2us(8));
@@ -75,6 +85,7 @@ int main() {
     test_clamp_us();
     test_nearest_ms_index();
     test_nearest_us_index();
+    test_step_lists_sync();
     test_presets();
 
     if (failures == 0) {
