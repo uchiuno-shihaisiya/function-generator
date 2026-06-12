@@ -19,6 +19,7 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <Preferences.h>  // NVS
+#include "fn_logic.h"
 
 #define def_hazard "hazard"
 #define def_ess "ess"
@@ -34,24 +35,7 @@ static uint32_t lastEncMove = 0; // 前回の回転時刻
 // ====== 出力ピン割り当て（4ch）======
 static const int PINS[4] = {18, 19, 23, 5}; // CH1..CH4
 
-// ====== プリセット（us）======
-static inline uint32_t ms2us(uint32_t ms){ return ms * 1000UL; }
-static inline uint32_t us2ms(uint32_t us){ return us / 1000UL; }
-
-static const uint32_t MIN_MS = 1;
-static const uint32_t MAX_MS = 3000;        // ms 入力の上限（phase,setコマンド等）
-static const uint32_t MAX_US = 3000000UL;   // us 内部値の上限（3秒）
-
-struct PatternUS { uint32_t on_us, off_us; };
-static PatternUS PRESET_POSITION_US = { ms2us(8),   ms2us(1)   };
-static PatternUS PRESET_R_TURN_US     = { ms2us(380), ms2us(190) };
-static PatternUS PRESET_L_TURN_US     = { ms2us(380), ms2us(190) };
-static PatternUS PRESET_TURN_US     = { ms2us(380), ms2us(190) };
-static PatternUS PRESET_ESS_US      = { ms2us(120), ms2us(120) };
-
-static inline uint32_t clamp_us(uint32_t v){
-  return v == 0 ? 1u : (v > MAX_US ? MAX_US : v);
-}
+// ====== プリセット（us）======ーfn_logic.h 参照
 
 // 先頭付近のグローバルに追加
 TaskHandle_t gPulseTask = nullptr;
@@ -164,29 +148,7 @@ void set_running_mask(uint8_t mask){
   }
 }
 
-// ---- Step 候補（Unit別）----
-static const uint16_t STEP_MS_LIST[] = {1,5,10,50,100,250,500,1000,2000,3000}; // ms
-static const uint32_t STEP_US_LIST[] = {10,50,100,200,500,1000,2000,5000,10000,50000,100000}; // us
-
-// いまの enc_step_us を基準に、最も近い候補のインデックスを返す（ms候補/ us候補）
-int nearest_ms_index(uint32_t step_us){
-  int best = 0; uint32_t bestd = 0xFFFFFFFF;
-  for(size_t i=0;i<sizeof(STEP_MS_LIST)/sizeof(STEP_MS_LIST[0]);++i){
-    uint32_t cand = STEP_MS_LIST[i]*1000UL;
-    uint32_t d = (cand>step_us)? (cand-step_us) : (step_us-cand);
-    if(d < bestd){ bestd=d; best=(int)i; }
-  }
-  return best;
-}
-int nearest_us_index(uint32_t step_us){
-  int best = 0; uint32_t bestd = 0xFFFFFFFF;
-  for(size_t i=0;i<sizeof(STEP_US_LIST)/sizeof(STEP_US_LIST[0]);++i){
-    uint32_t cand = STEP_US_LIST[i];
-    uint32_t d = (cand>step_us)? (cand-step_us) : (step_us-cand);
-    if(d < bestd){ bestd=d; best=(int)i; }
-  }
-  return best;
-}
+// ---- Step 候補（Unit別）---- fn_logic.h 参照
 
 // Unitに応じて enc_step_us を次の候補に更新
 void stepcycle_next(){

@@ -1,0 +1,22 @@
+name: Host Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S test/host -B build/test -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build/test --parallel
+
+      - name: Test
+        run: ctest --test-dir build/test --output-on-failure
